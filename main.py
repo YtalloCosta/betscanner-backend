@@ -72,7 +72,8 @@ async def shutdown_event():
             pass
 
 async def run_scrapers(days_ahead: int = DEFAULT_DAYS_AHEAD) -> int:
-    scrapers = [MockScraper()]  # add real scrapers to this list
+    # add real scrapers to this list, e.g. PlaywrightTemplateScraper(), Bet365Scraper(), BetanoScraper()
+    scrapers = [MockScraper()]
     new_items = []
     for s in scrapers:
         fetched = await s.fetch_upcoming(days_ahead=days_ahead)
@@ -81,7 +82,8 @@ async def run_scrapers(days_ahead: int = DEFAULT_DAYS_AHEAD) -> int:
     async with STORE_LOCK:
         added = dedupe_add(ODDS_STORE, new_items)
     surebets = detect_surebets(ODDS_STORE, min_profit_pct=0.1)
-    await manager.broadcast({"type": "surebets_update", "count": len(surebets), "data": surebets})
+    # broadcast (non-blocking)
+    asyncio.create_task(manager.broadcast({"type": "surebets_update", "count": len(surebets), "data": surebets}))
     return added
 
 async def periodic_scrape():
@@ -89,6 +91,7 @@ async def periodic_scrape():
         try:
             await run_scrapers(days_ahead=DEFAULT_DAYS_AHEAD)
         except Exception:
+            # in production, log the exception
             pass
         await asyncio.sleep(SCRAPE_INTERVAL)
 
@@ -123,7 +126,9 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
+            # keep connection alive — optionally receive commands
             msg = await websocket.receive_text()
-            # optionally handle commands
+            # ignoring messages for now
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
