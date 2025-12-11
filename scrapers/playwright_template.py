@@ -1,5 +1,5 @@
-from .base import BaseScraper
-from ..models.odds import Odds
+from scrapers.base import BaseScraper
+from models.odds import Odds
 from typing import List
 from datetime import datetime
 import uuid
