@@ -1,12 +1,20 @@
-from fastapi import FastAPI, HTTPException, Depends, Header
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional, List
 import os
+import asyncio
+from fastapi import FastAPI, HTTPException, Depends, Header, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional, List, Dict
+from datetime import datetime
+from models.odds import Odds
+from scrapers.mock_scraper import MockScraper
+from services.surebet import detect_surebets
+from utils.dedupe import dedupe_add
 
-app = FastAPI(title="BetScanner API")
+API_KEY = os.getenv("BETSCANNER_API_KEY", None)
+SCRAPE_INTERVAL = int(os.getenv("SCRAPE_INTERVAL_SECONDS", "60"))
+DEFAULT_DAYS_AHEAD = int(os.getenv("DEFAULT_DAYS_AHEAD", "7"))
 
-# CORS
+app = FastAPI(title="BetScanner Realtime")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,71 +23,107 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Auth via API Key
-API_KEY = os.getenv("BETSCANNER_API_KEY", "your-secret-key")
-
 async def verify_api_key(x_api_key: str = Header(...)):
+    if API_KEY is None:
+        return x_api_key
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
     return x_api_key
 
-# Models
-class OddsData(BaseModel):
-    home_team: str
-    away_team: str
-    league: str
-    sport: str
-    market: str
-    selection: str
-    odds: float
-    bookmaker: str
-    timestamp: str
+ODDS_STORE: List[Dict] = []
+STORE_LOCK = asyncio.Lock()
 
-class SureBet(BaseModel):
-    home_team: str
-    away_team: str
-    league: str
-    profit_percentage: float
-    bets: List[dict]
+class ConnectionManager:
+    def __init__(self):
+        self.active: List[WebSocket] = []
 
-class ValueBet(BaseModel):
-    home_team: str
-    away_team: str
-    league: str
-    expected_value: float
-    odds: float
-    bookmaker: str
-    market: str
-    selection: str
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active.append(websocket)
 
-# Endpoints
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active:
+            self.active.remove(websocket)
+
+    async def broadcast(self, message: Dict):
+        to_remove = []
+        for ws in list(self.active):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                to_remove.append(ws)
+        for r in to_remove:
+            self.disconnect(r)
+
+manager = ConnectionManager()
+
+@app.on_event("startup")
+async def startup_event():
+    app.state.scrape_task = asyncio.create_task(periodic_scrape())
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    task = getattr(app.state, "scrape_task", None)
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+async def run_scrapers(days_ahead: int = DEFAULT_DAYS_AHEAD) -> int:
+    scrapers = [MockScraper()]  # add real scrapers to this list
+    new_items = []
+    for s in scrapers:
+        fetched = await s.fetch_upcoming(days_ahead=days_ahead)
+        for o in fetched:
+            new_items.append(o.dict())
+    async with STORE_LOCK:
+        added = dedupe_add(ODDS_STORE, new_items)
+    surebets = detect_surebets(ODDS_STORE, min_profit_pct=0.1)
+    await manager.broadcast({"type": "surebets_update", "count": len(surebets), "data": surebets})
+    return added
+
+async def periodic_scrape():
+    while True:
+        try:
+            await run_scrapers(days_ahead=DEFAULT_DAYS_AHEAD)
+        except Exception:
+            pass
+        await asyncio.sleep(SCRAPE_INTERVAL)
+
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status":"ok","timestamp": datetime.utcnow().isoformat()+"Z"}
 
 @app.get("/odds", dependencies=[Depends(verify_api_key)])
 async def get_odds(sport: Optional[str] = None, league: Optional[str] = None):
-    # TODO: Implementar scraping real
-    # Por enquanto, retorna dados mock
-    return {"odds": [], "last_updated": "2024-01-01T00:00:00Z"}
-
-@app.get("/surebets", dependencies=[Depends(verify_api_key)])
-async def get_surebets(
-    min_profit: Optional[float] = 0.5,
-    sport: Optional[str] = None
-):
-    # TODO: Implementar detecção de surebets
-    return {"surebets": [], "count": 0}
-
-@app.get("/valuebets", dependencies=[Depends(verify_api_key)])
-async def get_valuebets(
-    min_ev: Optional[float] = 2.0,
-    sport: Optional[str] = None
-):
-    # TODO: Implementar detecção de valuebets
-    return {"valuebets": [], "count": 0}
+    async with STORE_LOCK:
+        data = list(ODDS_STORE)
+    if sport:
+        data = [d for d in data if d.get("sport")==sport]
+    if league:
+        data = [d for d in data if d.get("league")==league]
+    return {"count": len(data), "odds": data}
 
 @app.post("/scrape", dependencies=[Depends(verify_api_key)])
-async def trigger_scrape(bookmakers: Optional[List[str]] = None):
-    # TODO: Disparar scraping manual
-    return {"status": "scraping_started"}
+async def trigger_scrape(days_ahead: Optional[int] = DEFAULT_DAYS_AHEAD):
+    added = await run_scrapers(days_ahead=days_ahead)
+    return {"status":"ok","added": added}
+
+@app.get("/surebets", dependencies=[Depends(verify_api_key)])
+async def get_surebets(min_profit: Optional[float] = 0.1):
+    async with STORE_LOCK:
+        data = list(ODDS_STORE)
+    res = detect_surebets(data, min_profit_pct=min_profit)
+    return {"count": len(res), "surebets": res}
+
+@app.websocket("/ws/updates")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            msg = await websocket.receive_text()
+            # optionally handle commands
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
