@@ -1,6 +1,9 @@
-class BaseScraper:
-    def __init__(self):
-        pass
+from typing import List
+from ..models.odds import Odds
 
-    async def fetch_odds(self):
-        raise NotImplementedError("Implement in subclass")
+class BaseScraper:
+    name = "base"
+
+    async def fetch_upcoming(self, days_ahead: int = 7) -> List[Odds]:
+        """Return list[Odds] for next days_ahead days."""
+        raise NotImplementedError
