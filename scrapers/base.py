@@ -1,5 +1,5 @@
 from typing import List
-from ..models.odds import Odds
+from models.odds import Odds
 
 class BaseScraper:
     name = "base"
