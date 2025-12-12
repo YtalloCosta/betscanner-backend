@@ -8,3 +8,4 @@ playwright==1.40.0
 aiohttp
 uvicorn
 fastapi
+playwright
