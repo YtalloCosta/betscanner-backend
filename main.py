@@ -5,7 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List, Dict
 from datetime import datetime
 from models.odds import Odds
-from scrapers.mock_scraper import MockScraper
+from scrapers.playwright_template import PlaywrightScraper
+scraper = PlaywrightScraper()
 from services.surebet import detect_surebets
 from utils.dedupe import dedupe_add
 
