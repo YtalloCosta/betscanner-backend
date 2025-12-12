@@ -5,10 +5,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List, Dict
 from datetime import datetime
 from models.odds import Odds
-from scrapers.playwright_template import PlaywrightScraper
-scraper = PlaywrightScraper()
-from services.surebet import detect_surebets
 from utils.dedupe import dedupe_add
+
+# scrapers reais e templates
+from scrapers.betano_scraper import BetanoScraper
+from scrapers.sportingbet_scraper import SportingBetScraper
+from scrapers.kto_scraper import KTOScraper
+from scrapers.bet365_template import Bet365ScraperTemplate
+from scrapers.pinnacle_template import PinnacleScraperTemplate
+from scrapers.betfair_template import BetfairScraperTemplate
+from scrapers.x1bet_template import OneXBetScraperTemplate
 
 API_KEY = os.getenv("BETSCANNER_API_KEY", None)
 SCRAPE_INTERVAL = int(os.getenv("SCRAPE_INTERVAL_SECONDS", "60"))
@@ -34,6 +40,7 @@ async def verify_api_key(x_api_key: str = Header(...)):
 ODDS_STORE: List[Dict] = []
 STORE_LOCK = asyncio.Lock()
 
+# websocket manager (unchanged)
 class ConnectionManager:
     def __init__(self):
         self.active: List[WebSocket] = []
@@ -72,28 +79,73 @@ async def shutdown_event():
         except asyncio.CancelledError:
             pass
 
+# instantiate scrapers (mix of real & templates)
+SCRAPERS = [
+    BetanoScraper(),
+    SportingBetScraper(),
+    KTOScraper(),
+    Bet365ScraperTemplate(),
+    PinnacleScraperTemplate(),
+    BetfairScraperTemplate(),
+    OneXBetScraperTemplate(),
+]
+
 async def run_scrapers(days_ahead: int = DEFAULT_DAYS_AHEAD) -> int:
-    # add real scrapers to this list, e.g. PlaywrightTemplateScraper(), Bet365Scraper(), BetanoScraper()
-    scrapers = [MockScraper()]
+    """
+    Executa todos os scrapers em paralelo, coleta odds, faz dedupe e detecta surebets.
+    """
+    tasks = []
+    for s in SCRAPERS:
+        # wrap call to protect each scraper
+        async def run_one(scr):
+            try:
+                return await asyncio.wait_for(scr.fetch_upcoming(days_ahead=days_ahead), timeout=45)
+            except asyncio.TimeoutError:
+                print(f"[scraper:{scr.name}] timeout")
+                return []
+            except Exception as e:
+                print(f"[scraper:{scr.name}] error: {e}")
+                return []
+        tasks.append(run_one(s))
+
+    results = await asyncio.gather(*tasks, return_exceptions=False)
+
     new_items = []
-    for s in scrapers:
-        fetched = await s.fetch_upcoming(days_ahead=days_ahead)
-        for o in fetched:
-            new_items.append(o.dict())
+    for res in results:
+        if isinstance(res, list):
+            for o in res:
+                if isinstance(o, Odds):
+                    new_items.append(o.dict())
+                elif isinstance(o, dict):
+                    new_items.append(o)
+                else:
+                    # assume pydantic model with .dict()
+                    try:
+                        new_items.append(o.dict())
+                    except Exception:
+                        continue
+
     async with STORE_LOCK:
         added = dedupe_add(ODDS_STORE, new_items)
-    surebets = detect_surebets(ODDS_STORE, min_profit_pct=0.1)
-    # broadcast (non-blocking)
+
+    # detect surebets (reuse service)
+    try:
+        from services.surebet import detect_surebets
+        surebets = detect_surebets(ODDS_STORE, min_profit_pct=0.1)
+    except Exception:
+        surebets = []
+
+    # broadcast non-blocking
     asyncio.create_task(manager.broadcast({"type": "surebets_update", "count": len(surebets), "data": surebets}))
     return added
 
 async def periodic_scrape():
     while True:
         try:
-            await run_scrapers(days_ahead=DEFAULT_DAYS_AHEAD)
-        except Exception:
-            # in production, log the exception
-            pass
+            added = await run_scrapers(days_ahead=DEFAULT_DAYS_AHEAD)
+            print(f"[periodic_scrape] added {added} odds at {datetime.utcnow().isoformat()}Z")
+        except Exception as e:
+            print("[periodic_scrape] error:", e)
         await asyncio.sleep(SCRAPE_INTERVAL)
 
 @app.get("/health")
@@ -119,6 +171,7 @@ async def trigger_scrape(days_ahead: Optional[int] = DEFAULT_DAYS_AHEAD):
 async def get_surebets(min_profit: Optional[float] = 0.1):
     async with STORE_LOCK:
         data = list(ODDS_STORE)
+    from services.surebet import detect_surebets
     res = detect_surebets(data, min_profit_pct=min_profit)
     return {"count": len(res), "surebets": res}
 
@@ -127,9 +180,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            # keep connection alive — optionally receive commands
             msg = await websocket.receive_text()
-            # ignoring messages for now
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
