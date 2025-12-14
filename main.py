@@ -6,6 +6,7 @@ from typing import Optional, List, Dict
 from datetime import datetime
 from models.odds import Odds
 from utils.dedupe import dedupe_add
+from utils.normalize import clean_team_name
 
 # scrapers reais e templates
 from scrapers.betano_scraper import BetanoScraper
@@ -115,7 +116,11 @@ async def run_scrapers(days_ahead: int = DEFAULT_DAYS_AHEAD) -> int:
         if isinstance(res, list):
             for o in res:
                 if isinstance(o, Odds):
-                    new_items.append(o.dict())
+    d = o.dict()
+    d["home_team"] = clean_team_name(d["home_team"])
+    d["away_team"] = clean_team_name(d["away_team"])
+    new_items.append(d)
+
                 elif isinstance(o, dict):
                     new_items.append(o)
                 else:
