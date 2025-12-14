@@ -9,11 +9,13 @@ from utils.dedupe import dedupe_add
 
 # scrapers reais e templates
 from scrapers.betano import BetanoScraper
-from scrapers.sportingbet import SportingBetScraper
+from scrapers.bwin import BwinScraper
 from scrapers.kto import KTOScraper
-from scrapers.pinnacle_template import PinnacleScraperTemplate
-from scrapers.betfair_template import BetfairScraperTemplate
-from scrapers.x1bet_template import OneXBetScraperTemplate
+from scrapers.pinnacle import PinnacleScraper
+from scrapers.sportingbet import SportingbetScraper
+from scrapers.stake import StakeScraper
+from scrapers.xb1 import OneXBetScraper
+from scrapers.xb22 import TwentyTwoBetScraper
 
 API_KEY = os.getenv("BETSCANNER_API_KEY", None)
 SCRAPE_INTERVAL = int(os.getenv("SCRAPE_INTERVAL_SECONDS", "60"))
@@ -41,11 +43,13 @@ STORE_LOCK = asyncio.Lock()
 
 SCRAPERS = [
     BetanoScraper(),
-    SportingBetScraper(),  # Corrigido aqui
+    BwinScraper(),
     KTOScraper(),
-    PinnacleScraperTemplate(),
-    BetfairScraperTemplate(),
-    OneXBetScraperTemplate(),
+    PinnacleScraper(),
+    SportingbetScraper(),
+    StakeScraper(),
+    OneXBetScraper(),
+    TwentyTwoBetScraper(),
 ]
 
 async def run_scrapers(days_ahead: int = DEFAULT_DAYS_AHEAD) -> int:
