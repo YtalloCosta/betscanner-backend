@@ -12,7 +12,6 @@ from scrapers.betano import BetanoScraper
 from scrapers.bwin import BwinScraper
 from scrapers.kto import KTOScraper
 from scrapers.pinnacle import PinnacleScraper
-from scrapers.sportingbet import SportingbetScraper
 from scrapers.stake import StakeScraper
 from scrapers.xb1 import OneXBetScraper
 from scrapers.xb22 import TwentyTwoBetScraper
