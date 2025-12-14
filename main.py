@@ -15,6 +15,7 @@ from scrapers.pinnacle import PinnacleScraper
 from scrapers.stake import StakeScraper
 from scrapers.xb1 import OneXBetScraper
 from scrapers.xb22 import TwentyTwoBetScraper
+from scrapers.sportingbet import SportingbetScraper
 
 API_KEY = os.getenv("BETSCANNER_API_KEY", None)
 SCRAPE_INTERVAL = int(os.getenv("SCRAPE_INTERVAL_SECONDS", "60"))
@@ -48,6 +49,7 @@ SCRAPERS = [
     StakeScraper(),
     OneXBetScraper(),
     TwentyTwoBetScraper(),
+    SportingbetScraper(),
 ]
 
 async def run_scrapers(days_ahead: int = DEFAULT_DAYS_AHEAD) -> int:
