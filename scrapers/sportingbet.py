@@ -9,9 +9,8 @@ from models.odds import Odds
 
 from utils.normalize import (
     clean_team_name,
-    clean_market_name,
-    clean_selection_name,
-    clean_league_name
+    clean_league_name,
+    clean_selection_name
 )
 
 
@@ -25,7 +24,7 @@ class SportingbetScraper(BaseScraper):
         results: List[Odds] = []
 
         # ============================================================
-        # 1) CAPTURAR TOKEN REAL DA SPORTINGBET PELO PLAYWRIGHT
+        # 1) CAPTURAR TOKEN VIA PLAYWRIGHT
         # ============================================================
         try:
             async with async_playwright() as pw:
@@ -36,7 +35,7 @@ class SportingbetScraper(BaseScraper):
                 page = await browser.new_page()
 
                 await page.goto(self.PAGE_URL, timeout=60000)
-                await page.wait_for_timeout(3500)
+                await page.wait_for_timeout(3000)
 
                 token = await page.evaluate(
                     "() => window.localStorage.getItem('auth.access_token')"
@@ -45,15 +44,15 @@ class SportingbetScraper(BaseScraper):
                 await browser.close()
 
         except Exception as e:
-            print("[Sportingbet] Falha ao capturar token:", e)
+            print("[Sportingbet] TOKEN ERROR:", e)
             return results
 
         if not token:
-            print("[Sportingbet] Token não encontrado!")
+            print("[Sportingbet] Token não encontrado")
             return results
 
         # ============================================================
-        # 2) FAZER REQUEST REAL PARA A API DA SPORTINGBET
+        # 2) API REQUEST REAL
         # ============================================================
         headers = {
             "Authorization": f"Bearer {token}",
@@ -61,19 +60,19 @@ class SportingbetScraper(BaseScraper):
         }
 
         payload = {
-            "sportIds": [4],  # futebol
+            "sportIds": [4],               # Futebol
             "marketLimit": 200,
-            "count": 100,
+            "count": 200,
             "offset": 0,
             "includeMarkets": True,
         }
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(self.API_URL, json=payload, headers=headers, timeout=20) as resp:
+                async with session.post(self.API_URL, headers=headers, json=payload, timeout=20) as resp:
                     data = await resp.json()
         except Exception as e:
-            print("[Sportingbet API] erro:", e)
+            print("[Sportingbet API] error:", e)
             return results
 
         events = data.get("events", [])
@@ -85,34 +84,35 @@ class SportingbetScraper(BaseScraper):
             try:
                 league = clean_league_name(ev.get("competition", {}).get("name", ""))
 
-                participants = ev.get("participants", [])
-                home = next((p["name"] for p in participants if p["position"] == "home"), None)
-                away = next((p["name"] for p in participants if p["position"] == "away"), None)
+                home = clean_team_name(
+                    next((p["name"] for p in ev.get("participants", []) if p["position"] == "home"), None)
+                )
+                away = clean_team_name(
+                    next((p["name"] for p in ev.get("participants", []) if p["position"] == "away"), None)
+                )
 
                 if not home or not away:
                     continue
 
-                home = clean_team_name(home)
-                away = clean_team_name(away)
-
                 start_time = ev.get("startTime")
 
-                # EVENT ID ESTÁVEL
-                event_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{home}-{away}-{start_time}"))
+                # event_id determinístico por evento + casa
+                event_id = str(uuid.uuid5(
+                    uuid.NAMESPACE_DNS,
+                    f"{home}-{away}-{start_time}-sportingbet"
+                ))
 
                 markets = ev.get("markets", [])
+                timestamp = datetime.utcnow().isoformat() + "Z"
 
-                # ====================================================
-                # 4) PROCESSAR CADA MERCADO
-                # ====================================================
-                for m in markets:
-                    market_key = m.get("key")
-                    selections = m.get("selections", [])
-
-                    # ------------------------ 1X2 ------------------------
-                    if market_key == "match_result":
-                        for sel in selections:
-                            results.append(Odds(
+                # ============================================================
+                # 1X2
+                # ============================================================
+                m_1x2 = next((m for m in markets if m["key"] == "match_result"), None)
+                if m_1x2:
+                    for sel in m_1x2.get("selections", []):
+                        results.append(
+                            Odds(
                                 event_id=event_id,
                                 home_team=home,
                                 away_team=away,
@@ -122,31 +122,41 @@ class SportingbetScraper(BaseScraper):
                                 selection=clean_selection_name(sel["name"]),
                                 odds=float(sel["price"]),
                                 bookmaker=self.name,
-                                timestamp=datetime.utcnow().isoformat() + "Z",
-                                start_time=start_time
-                            ))
+                                timestamp=timestamp,
+                                start_time=start_time,
+                            )
+                        )
 
-                    # ------------------ DUPLA CHANCE ---------------------
-                    if market_key == "double_chance":
-                        for sel in selections:
-                            results.append(Odds(
+                # ============================================================
+                # DUPLA CHANCE
+                # ============================================================
+                m_dc = next((m for m in markets if m["key"] == "double_chance"), None)
+                if m_dc:
+                    for sel in m_dc.get("selections", []):
+                        results.append(
+                            Odds(
                                 event_id=event_id,
                                 home_team=home,
                                 away_team=away,
                                 league=league,
                                 sport="soccer",
                                 market="double_chance",
-                                selection=sel["name"],  # já vem padronizado: 1X / 12 / X2
+                                selection=sel["name"],
                                 odds=float(sel["price"]),
                                 bookmaker=self.name,
-                                timestamp=datetime.utcnow().isoformat() + "Z",
-                                start_time=start_time
-                            ))
+                                timestamp=timestamp,
+                                start_time=start_time,
+                            )
+                        )
 
-                    # ------------------- OVER / UNDER ---------------------
-                    if market_key == "totals":
-                        for sel in selections:
-                            results.append(Odds(
+                # ============================================================
+                # OVER / UNDER
+                # ============================================================
+                m_ou = next((m for m in markets if m["key"] == "totals"), None)
+                if m_ou:
+                    for sel in m_ou.get("selections", []):
+                        results.append(
+                            Odds(
                                 event_id=event_id,
                                 home_team=home,
                                 away_team=away,
@@ -156,14 +166,19 @@ class SportingbetScraper(BaseScraper):
                                 selection=clean_selection_name(sel["name"]),
                                 odds=float(sel["price"]),
                                 bookmaker=self.name,
-                                timestamp=datetime.utcnow().isoformat() + "Z",
-                                start_time=start_time
-                            ))
+                                timestamp=timestamp,
+                                start_time=start_time,
+                            )
+                        )
 
-                    # ------------------- AMBAS MARCAM ---------------------
-                    if market_key == "both_teams_to_score":
-                        for sel in selections:
-                            results.append(Odds(
+                # ============================================================
+                # BTTS
+                # ============================================================
+                m_btts = next((m for m in markets if m["key"] == "both_teams_to_score"), None)
+                if m_btts:
+                    for sel in m_btts.get("selections", []):
+                        results.append(
+                            Odds(
                                 event_id=event_id,
                                 home_team=home,
                                 away_team=away,
@@ -173,29 +188,35 @@ class SportingbetScraper(BaseScraper):
                                 selection=clean_selection_name(sel["name"]),
                                 odds=float(sel["price"]),
                                 bookmaker=self.name,
-                                timestamp=datetime.utcnow().isoformat() + "Z",
-                                start_time=start_time
-                            ))
+                                timestamp=timestamp,
+                                start_time=start_time,
+                            )
+                        )
 
-                    # ---------------- HANDICAP ASIÁTICO --------------------
-                    if market_key == "asian_handicap":
-                        for sel in selections:
-                            results.append(Odds(
+                # ============================================================
+                # ASIAN HANDICAP
+                # ============================================================
+                m_ah = next((m for m in markets if m["key"] == "asian_handicap"), None)
+                if m_ah:
+                    for sel in m_ah.get("selections", []):
+                        results.append(
+                            Odds(
                                 event_id=event_id,
                                 home_team=home,
                                 away_team=away,
                                 league=league,
                                 sport="soccer",
                                 market="asian_handicap",
-                                selection=sel["name"],
+                                selection=clean_selection_name(sel["name"]),
                                 odds=float(sel["price"]),
                                 bookmaker=self.name,
-                                timestamp=datetime.utcnow().isoformat() + "Z",
-                                start_time=start_time
-                            ))
+                                timestamp=timestamp,
+                                start_time=start_time,
+                            )
+                        )
 
             except Exception as e:
-                print("[Sportingbet] erro de parsing:", e)
+                print("[Sportingbet] parse error:", e)
                 continue
 
         return results
