@@ -13,7 +13,7 @@ from utils.normalize import (
     clean_selection_name,
 )
 
-API = (
+API_URL = (
     "https://gaming-int.bwin.com/cms/api/event?"
     "lang=pt-br&sportIds=4&isHighlighted=false&skip=0&take=200"
 )
@@ -23,132 +23,167 @@ class BwinScraper(BaseScraper):
     name = "bwin"
 
     async def fetch_upcoming(self, days_ahead: int = 7) -> List[Odds]:
-        out: List[Odds] = []
+        results: List[Odds] = []
 
+        # ================================
+        # 1) CHAMADA À API REAL
+        # ================================
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(API, timeout=20) as resp:
+                async with session.get(API_URL, timeout=20) as resp:
                     data = await resp.json()
         except Exception as e:
-            print(f"[BWIN API ERROR] {e}")
-            return out
+            print("[BWIN] API erro:", e)
+            return results
 
         events = data.get("events", [])
 
+        # ================================
+        # 2) PROCESSAR EVENTOS
+        # ================================
         for ev in events:
             try:
-                league = clean_league_name(ev["competition"]["name"])
-                start_time = ev.get("startDate")
-                timestamp = datetime.utcnow().isoformat() + "Z"
+                league = clean_league_name(ev.get("competition", {}).get("name", "Bwin"))
 
                 home = clean_team_name(ev["participants"][0]["name"])
                 away = clean_team_name(ev["participants"][1]["name"])
 
-                event_uid = str(uuid.uuid4())  # MESMO ID para todos os mercados
+                start_time = ev.get("startDate")
+                timestamp = datetime.utcnow().isoformat() + "Z"
+
+                # event_id universal
+                event_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{home}-{away}-{start_time}"))
 
                 markets = ev.get("markets", [])
-                if not markets:
-                    continue
 
-                # PROCESSAR CADA MERCADO
+                # flags para evitar linhas secundárias
+                found_ou = False
+                found_ah = False
+
                 for m in markets:
-                    market_key = m.get("marketType")
+                    key = m.get("key", "").lower()
+                    selections = m.get("outcomes", [])
 
-                    outcomes = m.get("outcomes", [])
-                    if not outcomes:
-                        continue
+                    # ================================
+                    # 1) MERCADO 1X2
+                    # ================================
+                    if key in ["3way", "match_result", "1x2"]:
+                        for sel in selections:
+                            selection = clean_selection_name(sel["name"])
+                            odds = float(sel["odds"])
 
-                    # --------------------------------------------------
-                    # 1) MERCADO 1x2 (WIN_DRAW_WIN)
-                    # --------------------------------------------------
-                    if market_key == "WINNER":
-                        # bwin envia: home / draw / away em ordens locais
-                        for outcome in outcomes:
-                            sel_raw = outcome.get("type")
-                            odds_val = float(outcome.get("odds", 0))
-
-                            selection = clean_selection_name(sel_raw)
-
-                            out.append(
+                            results.append(
                                 Odds(
-                                    event_id=event_uid,
+                                    event_id=event_id,
                                     home_team=home,
                                     away_team=away,
                                     league=league,
+                                    sport="soccer",
                                     market="1x2",
                                     selection=selection,
-                                    odds=odds_val,
+                                    odds=odds,
                                     bookmaker=self.name,
                                     timestamp=timestamp,
                                     start_time=start_time,
                                 )
                             )
 
-                    # --------------------------------------------------
-                    # 2) BTTS
-                    # --------------------------------------------------
-                    if market_key == "BOTH_TEAMS_TO_SCORE":
-                        for outcome in outcomes:
-                            sel = clean_selection_name(outcome["type"])
-                            out.append(
+                    # ================================
+                    # 2) DUPLA CHANCE
+                    # ================================
+                    if key in ["double_chance", "dc"]:
+                        for sel in selections:
+                            selection = sel["name"].upper()
+                            odds = float(sel["odds"])
+
+                            results.append(
                                 Odds(
-                                    event_id=event_uid,
+                                    event_id=event_id,
                                     home_team=home,
                                     away_team=away,
                                     league=league,
+                                    sport="soccer",
+                                    market="double_chance",
+                                    selection=selection,
+                                    odds=odds,
+                                    bookmaker=self.name,
+                                    timestamp=timestamp,
+                                    start_time=start_time,
+                                )
+                            )
+
+                    # ================================
+                    # 3) OVER/UNDER PRINCIPAL
+                    # ================================
+                    if key == "totals" and not found_ou:
+                        sel = selections[0]  # a Bwin sempre lista a linha principal primeiro
+                        results.append(
+                            Odds(
+                                event_id=event_id,
+                                home_team=home,
+                                away_team=away,
+                                league=league,
+                                sport="soccer",
+                                market="over_under",
+                                selection=clean_selection_name(sel["name"]),
+                                odds=float(sel["odds"]),
+                                bookmaker=self.name,
+                                timestamp=timestamp,
+                                start_time=start_time,
+                            )
+                        )
+                        found_ou = True
+
+                    # ================================
+                    # 4) BTTS
+                    # ================================
+                    if key in ["both_teams_to_score", "btts"]:
+                        for sel in selections:
+                            selection = clean_selection_name(sel["name"])
+                            odds = float(sel["odds"])
+
+                            results.append(
+                                Odds(
+                                    event_id=event_id,
+                                    home_team=home,
+                                    away_team=away,
+                                    league=league,
+                                    sport="soccer",
                                     market="btts",
-                                    selection=sel,  # yes/no
-                                    odds=float(outcome["odds"]),
+                                    selection=selection,
+                                    odds=odds,
                                     bookmaker=self.name,
                                     timestamp=timestamp,
                                     start_time=start_time,
                                 )
                             )
 
-                    # --------------------------------------------------
-                    # 3) OVER / UNDER
-                    # --------------------------------------------------
-                    if market_key == "TOTAL_POINTS":
-                        for outcome in outcomes:
-                            sel = outcome["type"].lower()  # "over 2.5"
-                            out.append(
-                                Odds(
-                                    event_id=event_uid,
-                                    home_team=home,
-                                    away_team=away,
-                                    league=league,
-                                    market="over_under",
-                                    selection=sel,
-                                    odds=float(outcome["odds"]),
-                                    bookmaker=self.name,
-                                    timestamp=timestamp,
-                                    start_time=start_time,
-                                )
-                            )
+                    # ================================
+                    # 5) ASIAN HANDICAP PRINCIPAL
+                    # ================================
+                    if key in ["handicap", "asian_handicap"] and not found_ah:
+                        sel = selections[0]  # usa só o handicap principal
+                        selection = clean_selection_name(sel["name"])
 
-                    # --------------------------------------------------
-                    # 4) Handicap Asiático (quando disponível)
-                    # --------------------------------------------------
-                    if market_key == "HANDICAP":
-                        for outcome in outcomes:
-                            sel = outcome["type"]  # "home -1.0", "away +1.0"
-                            out.append(
-                                Odds(
-                                    event_id=event_uid,
-                                    home_team=home,
-                                    away_team=away,
-                                    league=league,
-                                    market="ah",
-                                    selection=sel.lower(),
-                                    odds=float(outcome["odds"]),
-                                    bookmaker=self.name,
-                                    timestamp=timestamp,
-                                    start_time=start_time,
-                                )
+                        results.append(
+                            Odds(
+                                event_id=event_id,
+                                home_team=home,
+                                away_team=away,
+                                league=league,
+                                sport="soccer",
+                                market="asian_handicap",
+                                selection=selection,
+                                odds=float(sel["odds"]),
+                                bookmaker=self.name,
+                                timestamp=timestamp,
+                                start_time=start_time,
                             )
+                        )
+                        found_ah = True
 
             except Exception as e:
-                print(f"[BWIN PARSE ERROR] {e}")
+                print("[BWIN] parse error:", e)
                 continue
 
-        return out
+        return results
