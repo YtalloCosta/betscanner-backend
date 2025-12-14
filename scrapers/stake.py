@@ -1,5 +1,4 @@
 import aiohttp
-import asyncio
 import uuid
 from datetime import datetime
 from typing import List
@@ -7,173 +6,181 @@ from typing import List
 from scrapers.base import BaseScraper
 from models.odds import Odds
 
+from utils.normalize import (
+    clean_team_name,
+    clean_league_name,
+    clean_market_name,
+    clean_selection_name
+)
+
 
 class StakeScraper(BaseScraper):
     name = "stake"
 
-    async def fetch_upcoming(self, days_ahead: int = 7) -> List[Odds]:
-        """
-        Scraper real usando a API pública da Stake.
-        Coleta múltiplos mercados para criar oportunidade de surebet:
-        - 1x2
-        - Dupla Chance
-        - Over/Under 2.5
-        - Ambas Marcam
-        - Handicap Asiático (quando disponível)
-        """
-        out: List[Odds] = []
+    API_URL = (
+        "https://api.stake.com/sports/events?"
+        "sport=soccer&limit=100&marketType="
+        "match_odds,totals,double_chance,both_teams_to_score,asian_handicap"
+    )
 
-        url = (
-            "https://api.stake.com/sports/events?"
-            "sport=soccer&limit=100&marketType=match_odds,totals,team_totals,"
-            "double_chance,both_teams_to_score,asian_handicap"
-        )
+    async def fetch_upcoming(self, days_ahead: int = 7) -> List[Odds]:
+        out: List[Odds] = []
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=20) as resp:
+                async with session.get(self.API_URL, timeout=20) as resp:
                     data = await resp.json()
-
-            events = data.get("events", [])
-            for ev in events:
-                try:
-                    home = ev["homeTeam"]["name"]
-                    away = ev["awayTeam"]["name"]
-                    league = ev["competition"]["name"]
-                    markets = ev.get("markets", [])
-
-                    # -------------------------
-                    # MERCADO 1 — 1x2
-                    # -------------------------
-                    m_1x2 = next((m for m in markets if m["key"] == "match_odds"), None)
-                    if m_1x2:
-                        outs = m_1x2.get("outcomes", [])
-                        if len(outs) >= 3:
-                            odd_home = float(outs[0]["price"])
-                            odd_draw = float(outs[1]["price"])
-                            odd_away = float(outs[2]["price"])
-
-                            out.extend([
-                                Odds(
-                                    event_id=str(uuid.uuid4()),
-                                    home_team=home,
-                                    away_team=away,
-                                    league=league,
-                                    market="1x2",
-                                    selection="home",
-                                    odds=odd_home,
-                                    bookmaker=self.name,
-                                    timestamp=datetime.utcnow().isoformat() + "Z",
-                                ),
-                                Odds(
-                                    event_id=str(uuid.uuid4()),
-                                    home_team=home,
-                                    away_team=away,
-                                    league=league,
-                                    market="1x2",
-                                    selection="draw",
-                                    odds=odd_draw,
-                                    bookmaker=self.name,
-                                    timestamp=datetime.utcnow().isoformat() + "Z",
-                                ),
-                                Odds(
-                                    event_id=str(uuid.uuid4()),
-                                    home_team=home,
-                                    away_team=away,
-                                    league=league,
-                                    market="1x2",
-                                    selection="away",
-                                    odds=odd_away,
-                                    bookmaker=self.name,
-                                    timestamp=datetime.utcnow().isoformat() + "Z",
-                                ),
-                            ])
-
-                    # -------------------------
-                    # MERCADO 2 — DUPLA CHANCE
-                    # -------------------------
-                    m_dc = next((m for m in markets if m["key"] == "double_chance"), None)
-                    if m_dc:
-                        for outcome in m_dc.get("outcomes", []):
-                            out.append(
-                                Odds(
-                                    event_id=str(uuid.uuid4()),
-                                    home_team=home,
-                                    away_team=away,
-                                    league=league,
-                                    market="double_chance",
-                                    selection=outcome["name"],  # "1X", "X2", "12"
-                                    odds=float(outcome["price"]),
-                                    bookmaker=self.name,
-                                    timestamp=datetime.utcnow().isoformat() + "Z",
-                                )
-                            )
-
-                    # -------------------------
-                    # MERCADO 3 — OVER / UNDER 2.5
-                    # -------------------------
-                    m_ou = next((m for m in markets if m["key"] == "totals"), None)
-                    if m_ou:
-                        for outcome in m_ou.get("outcomes", []):
-                            # exemplo: "over 2.5", "under 2.5"
-                            out.append(
-                                Odds(
-                                    event_id=str(uuid.uuid4()),
-                                    home_team=home,
-                                    away_team=away,
-                                    league=league,
-                                    market="over_under",
-                                    selection=outcome["name"],
-                                    odds=float(outcome["price"]),
-                                    bookmaker=self.name,
-                                    timestamp=datetime.utcnow().isoformat() + "Z",
-                                )
-                            )
-
-                    # -------------------------
-                    # MERCADO 4 — AMBAS MARCAM
-                    # -------------------------
-                    m_btts = next((m for m in markets if m["key"] == "both_teams_to_score"), None)
-                    if m_btts:
-                        for outcome in m_btts.get("outcomes", []):
-                            out.append(
-                                Odds(
-                                    event_id=str(uuid.uuid4()),
-                                    home_team=home,
-                                    away_team=away,
-                                    league=league,
-                                    market="both_teams_score",
-                                    selection=outcome["name"],  # "yes" / "no"
-                                    odds=float(outcome["price"]),
-                                    bookmaker=self.name,
-                                    timestamp=datetime.utcnow().isoformat() + "Z",
-                                )
-                            )
-
-                    # -------------------------
-                    # MERCADO 5 — HANDICAP ASIÁTICO
-                    # -------------------------
-                    m_ah = next((m for m in markets if m["key"] == "asian_handicap"), None)
-                    if m_ah:
-                        for outcome in m_ah.get("outcomes", []):
-                            out.append(
-                                Odds(
-                                    event_id=str(uuid.uuid4()),
-                                    home_team=home,
-                                    away_team=away,
-                                    league=league,
-                                    market="asian_handicap",
-                                    selection=outcome["name"],  # exemplo "-1.5", "+0.25"
-                                    odds=float(outcome["price"]),
-                                    bookmaker=self.name,
-                                    timestamp=datetime.utcnow().isoformat() + "Z",
-                                )
-                            )
-
-                except Exception:
-                    continue
-
         except Exception as e:
-            print(f"[StakeScraper] erro: {e}")
+            print(f"[Stake API ERROR] {e}")
+            return out
+
+        events = data.get("events", [])
+
+        for ev in events:
+            try:
+                # ===============================
+                # Dados base do evento
+                # ===============================
+                home = clean_team_name(ev["homeTeam"]["name"])
+                away = clean_team_name(ev["awayTeam"]["name"])
+                league = clean_league_name(ev["competition"]["name"])
+                start_time = ev.get("startTime")
+
+                # event_id consistente
+                event_uid = str(
+                    uuid.uuid5(uuid.NAMESPACE_DNS, f"stake-{home}-{away}-{start_time}")
+                )
+
+                timestamp = datetime.utcnow().isoformat() + "Z"
+
+                markets = ev.get("markets", [])
+
+                # ===============================
+                # 1) MERCADO 1X2
+                # ===============================
+                m_1x2 = next((m for m in markets if m["key"] == "match_odds"), None)
+                if m_1x2:
+                    for sel in m_1x2.get("outcomes", []):
+                        selection = clean_selection_name(sel["name"])
+                        odds = float(sel["price"])
+
+                        out.append(
+                            Odds(
+                                event_id=event_uid,
+                                home_team=home,
+                                away_team=away,
+                                league=league,
+                                sport="soccer",
+                                market="1x2",
+                                selection=selection,
+                                odds=odds,
+                                bookmaker=self.name,
+                                timestamp=timestamp,
+                                start_time=start_time,
+                            )
+                        )
+
+                # ===============================
+                # 2) DUPLA CHANCE
+                # ===============================
+                m_dc = next((m for m in markets if m["key"] == "double_chance"), None)
+                if m_dc:
+                    for sel in m_dc.get("outcomes", []):
+                        out.append(
+                            Odds(
+                                event_id=event_uid,
+                                home_team=home,
+                                away_team=away,
+                                league=league,
+                                sport="soccer",
+                                market="double_chance",
+                                selection=clean_selection_name(sel["name"]),
+                                odds=float(sel["price"]),
+                                bookmaker=self.name,
+                                timestamp=timestamp,
+                                start_time=start_time,
+                            )
+                        )
+
+                # ===============================
+                # 3) OVER / UNDER (CORRETO)
+                # ===============================
+                m_ou = next((m for m in markets if m["key"] == "totals"), None)
+                if m_ou:
+                    for sel in m_ou.get("outcomes", []):
+                        designation = sel.get("designation")  # over / under
+                        points = sel.get("points")  # ex: 2.5
+                        odds = float(sel["price"])
+
+                        selection = f"{designation} {points}"
+
+                        out.append(
+                            Odds(
+                                event_id=event_uid,
+                                home_team=home,
+                                away_team=away,
+                                league=league,
+                                sport="soccer",
+                                market="over_under",
+                                selection=selection,
+                                odds=odds,
+                                bookmaker=self.name,
+                                timestamp=timestamp,
+                                start_time=start_time,
+                            )
+                        )
+
+                # ===============================
+                # 4) AMBAS MARCAM
+                # ===============================
+                m_btts = next((m for m in markets if m["key"] == "both_teams_to_score"), None)
+                if m_btts:
+                    for sel in m_btts.get("outcomes", []):
+                        out.append(
+                            Odds(
+                                event_id=event_uid,
+                                home_team=home,
+                                away_team=away,
+                                league=league,
+                                sport="soccer",
+                                market="btts",
+                                selection=clean_selection_name(sel["name"]),
+                                odds=float(sel["price"]),
+                                bookmaker=self.name,
+                                timestamp=timestamp,
+                                start_time=start_time,
+                            )
+                        )
+
+                # ===============================
+                # 5) HANDICAP ASIÁTICO
+                # ===============================
+                m_ah = next((m for m in markets if m["key"] == "asian_handicap"), None)
+                if m_ah:
+                    for sel in m_ah.get("outcomes", []):
+                        points = sel.get("handicap")
+                        odds = float(sel["price"])
+
+                        selection = f"{points}"
+
+                        out.append(
+                            Odds(
+                                event_id=event_uid,
+                                home_team=home,
+                                away_team=away,
+                                league=league,
+                                sport="soccer",
+                                market="ah",
+                                selection=selection,
+                                odds=odds,
+                                bookmaker=self.name,
+                                timestamp=timestamp,
+                                start_time=start_time,
+                            )
+                        )
+
+            except Exception as e:
+                print(f"[StakeScraper PARSE ERROR] {e}")
+                continue
 
         return out
