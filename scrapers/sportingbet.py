@@ -9,7 +9,7 @@ from models.odds import Odds
 from playwright.async_api import async_playwright
 
 
-class SportingbetScraper(BaseScraper):
+class SportingBetScraper(BaseScraper):
     name = "sportingbet"
 
     async def fetch_upcoming(self, days_ahead: int = 7) -> List[Odds]:
