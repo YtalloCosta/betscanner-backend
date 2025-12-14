@@ -8,7 +8,7 @@ from models.odds import Odds
 from utils.dedupe import dedupe_add
 
 # scrapers reais e templates
-from scrapers.betano_scraper import BetanoScraper
+from scrapers.betano import BetanoScraper
 from scrapers.sportingbet_scraper import SportingBetScraper  # Corrigido aqui
 from scrapers.kto_scraper import KTOScraper
 from scrapers.bet365_template import Bet365ScraperTemplate
