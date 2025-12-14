@@ -9,8 +9,7 @@ from models.odds import Odds
 from playwright.async_api import async_playwright
 
 
-class SportingBetScraper(BaseScraper):
-
+class SportingBetScraper(BaseScraper):  # Corrigido o nome da classe aqui
     name = "sportingbet"
 
     async def fetch_upcoming(self, days_ahead: int = 7) -> List[Odds]:
@@ -24,6 +23,7 @@ class SportingBetScraper(BaseScraper):
                 headless=True,
                 args=["--no-sandbox", "--disable-setuid-sandbox"]
             )
+
             page = await browser.new_page()
             await page.goto(PAGE_URL, timeout=60000)
             await page.wait_for_timeout(4000)
@@ -35,7 +35,7 @@ class SportingBetScraper(BaseScraper):
             await browser.close()
 
         if not token:
-            print("[Sportingbet] Token não encontrado")
+            print("[SportingBet] Token não encontrado")
             return out
 
         headers = {
@@ -44,7 +44,7 @@ class SportingBetScraper(BaseScraper):
         }
 
         payload = {
-            "sportIds": [4],
+            "sportIds": [4],  # futebol
             "marketLimit": 100,
             "count": 50,
             "offset": 0,
@@ -56,18 +56,20 @@ class SportingBetScraper(BaseScraper):
                 async with session.post(API_URL, json=payload, headers=headers, timeout=20) as resp:
                     data = await resp.json()
         except Exception as e:
-            print(f"[Sportingbet API error] {e}")
+            print(f"[SportingBet API error] {e}")
             return out
 
         events = data.get("events", [])
 
         for ev in events:
             try:
-                league = ev.get("competition", {}).get("name", "Sportingbet")
+                league = ev.get("competition", {}).get("name", "SportingBet")
+
                 home = ev["participants"][0]["name"]
                 away = ev["participants"][1]["name"]
 
                 markets = ev.get("markets", [])
+
                 for m in markets:
                     key = m.get("key", "")
                     selections = m.get("selections", [])
@@ -94,6 +96,48 @@ class SportingBetScraper(BaseScraper):
                                 away_team=away,
                                 league=league,
                                 market="double_chance",
+                                selection=sel["name"],
+                                odds=float(sel["price"]),
+                                bookmaker=self.name,
+                                timestamp=datetime.utcnow().isoformat() + "Z",
+                            ))
+
+                    if key == "totals":
+                        for sel in selections:
+                            out.append(Odds(
+                                event_id=str(uuid.uuid4()),
+                                home_team=home,
+                                away_team=away,
+                                league=league,
+                                market="over_under",
+                                selection=sel["name"],
+                                odds=float(sel["price"]),
+                                bookmaker=self.name,
+                                timestamp=datetime.utcnow().isoformat() + "Z",
+                            ))
+
+                    if key == "both_teams_to_score":
+                        for sel in selections:
+                            out.append(Odds(
+                                event_id=str(uuid.uuid4()),
+                                home_team=home,
+                                away_team=away,
+                                league=league,
+                                market="btts",
+                                selection=sel["name"],
+                                odds=float(sel["price"]),
+                                bookmaker=self.name,
+                                timestamp=datetime.utcnow().isoformat() + "Z",
+                            ))
+
+                    if key == "asian_handicap":
+                        for sel in selections:
+                            out.append(Odds(
+                                event_id=str(uuid.uuid4()),
+                                home_team=home,
+                                away_team=away,
+                                league=league,
+                                market="asian_handicap",
                                 selection=sel["name"],
                                 odds=float(sel["price"]),
                                 bookmaker=self.name,
