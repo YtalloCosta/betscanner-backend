@@ -43,7 +43,6 @@ SCRAPERS = [
     BetanoScraper(),
     SportingBetScraper(),  # Corrigido aqui
     KTOScraper(),
-    Bet365ScraperTemplate(),
     PinnacleScraperTemplate(),
     BetfairScraperTemplate(),
     OneXBetScraperTemplate(),
