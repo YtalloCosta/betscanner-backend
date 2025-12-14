@@ -45,7 +45,6 @@ SCRAPERS = [
     BwinScraper(),
     KTOScraper(),
     PinnacleScraper(),
-    SportingbetScraper(),
     StakeScraper(),
     OneXBetScraper(),
     TwentyTwoBetScraper(),
