@@ -19,9 +19,9 @@ from utils.normalize import (
 from utils.dedupe import dedupe_add
 
 # ========== SCRAPERS ==========
-from scrapers.betano_scraper import BetanoScraper
-from scrapers.sportingbet_scraper import SportingBetScraper
-from scrapers.kto_scraper import KTOScraper
+from scrapers.betano import BetanoScraper
+from scrapers.sportingbet import SportingBetScraper
+from scrapers.kto import KTOScraper
 from scrapers.bet365_template import Bet365ScraperTemplate
 from scrapers.pinnacle_template import PinnacleScraperTemplate
 from scrapers.betfair_template import BetfairScraperTemplate
