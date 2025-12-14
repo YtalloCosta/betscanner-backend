@@ -6,9 +6,14 @@ from typing import List
 from scrapers.base import BaseScraper
 from models.odds import Odds
 
-PINNACLE_API = (
-    "https://guest.api.arcadia.pinnacle.com/0.1/sports/29/markets/straight"
+from utils.normalize import (
+    clean_team_name,
+    clean_league_name,
+    clean_market_name,
+    clean_selection_name
 )
+
+PINNACLE_API = "https://guest.api.arcadia.pinnacle.com/0.1/sports/29/markets/straight"
 
 
 class PinnacleScraper(BaseScraper):
@@ -17,12 +22,15 @@ class PinnacleScraper(BaseScraper):
     async def fetch_upcoming(self, days_ahead: int = 7) -> List[Odds]:
         out: List[Odds] = []
 
+        # ===============================
+        # 1) CHAMADA DE API
+        # ===============================
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(PINNACLE_API, timeout=15) as resp:
+                async with session.get(PINNACLE_API, timeout=20) as resp:
                     data = await resp.json()
         except Exception as e:
-            print(f"[PinnacleScraper] erro: {e}")
+            print(f"[Pinnacle ERROR] {e}")
             return out
 
         events = data.get("events", [])
@@ -30,21 +38,28 @@ class PinnacleScraper(BaseScraper):
         prices = data.get("prices", [])
         participants = data.get("participants", [])
 
-        # indexação rápida
-        team_name = {p["id"]: p["name"] for p in participants}
-        price_index = {}
+        # ===============================
+        # 2) INDEXAÇÃO
+        # ===============================
+        team_name = {p["id"]: clean_team_name(p["name"]) for p in participants}
 
+        price_index = {}
         for p in prices:
+            # type = moneyline / spread / total
+            # side = home/away/draw ou over/under
             key = (p["eventId"], p["period"], p["type"], p["side"])
             price_index[key] = p
 
+        # ===============================
+        # 3) PROCESSAR EVENTOS
+        # ===============================
         for ev in events:
-            event_id = ev["id"]
+            event_id_raw = ev["id"]
+            start_time = ev.get("startTime")
+            league = clean_league_name(ev.get("league", "Pinnacle"))
 
-            # nomes dos times
             home_id = ev.get("homeId")
             away_id = ev.get("awayId")
-            league = ev.get("league", "Pinnacle")
 
             if home_id not in team_name or away_id not in team_name:
                 continue
@@ -52,150 +67,106 @@ class PinnacleScraper(BaseScraper):
             home = team_name[home_id]
             away = team_name[away_id]
 
-            # ================================
-            # 1) MERCADO 1X2 (Moneyline)
-            # ================================
+            # Melhor event_id: estável e igual para todos os mercados
+            event_uid = str(
+                uuid.uuid5(uuid.NAMESPACE_DNS, f"pinnacle-{home}-{away}-{start_time}")
+            )
+
+            timestamp = datetime.utcnow().isoformat() + "Z"
+
+            # ===============================
+            # 4) MERCADO 1X2 (moneyline)
+            # ===============================
             for side in ["home", "draw", "away"]:
-                key = (event_id, 0, "moneyline", side)
+                key = (event_id_raw, 0, "moneyline", side)
                 if key in price_index:
-                    odds = price_index[key].get("price")
-                    if odds:
-                        out.append(
-                            Odds(
-                                event_id=str(uuid.uuid4()),
-                                home_team=home,
-                                away_team=away,
-                                league=league,
-                                market="1x2",
-                                selection=side,
-                                odds=float(odds),
-                                bookmaker=self.name,
-                                timestamp=datetime.utcnow().isoformat() + "Z",
-                            )
+                    px = price_index[key]["price"]
+
+                    out.append(
+                        Odds(
+                            event_id=event_uid,
+                            home_team=home,
+                            away_team=away,
+                            league=league,
+                            market="1x2",
+                            selection=clean_selection_name(side),
+                            odds=float(px),
+                            bookmaker=self.name,
+                            timestamp=timestamp,
+                            start_time=start_time,
+                            sport="soccer",
                         )
-
-            # ================================
-            # 2) MERCADO DUPLA CHANCE (COMPOSTO)
-            # ================================
-            # DC 1X
-            key_1x = (event_id, 0, "moneyline", "home")
-            key_x = (event_id, 0, "moneyline", "draw")
-            if key_1x in price_index and key_x in price_index:
-                out.append(
-                    Odds(
-                        event_id=str(uuid.uuid4()),
-                        home_team=home,
-                        away_team=away,
-                        league=league,
-                        market="double_chance",
-                        selection="1X",
-                        odds=1 / (1/price_index[key_1x]["price"] + 1/price_index[key_x]["price"]),
-                        bookmaker=self.name,
-                        timestamp=datetime.utcnow().isoformat() + "Z",
                     )
-                )
 
-            # DC X2
-            key_away = (event_id, 0, "moneyline", "away")
-            if key_x in price_index and key_away in price_index:
-                out.append(
-                    Odds(
-                        event_id=str(uuid.uuid4()),
-                        home_team=home,
-                        away_team=away,
-                        league=league,
-                        market="double_chance",
-                        selection="X2",
-                        odds=1 / (1/price_index[key_x]["price"] + 1/price_index[key_away]["price"]),
-                        bookmaker=self.name,
-                        timestamp=datetime.utcnow().isoformat() + "Z",
-                    )
-                )
-
-            # DC 12
-            if key_1x in price_index and key_away in price_index:
-                out.append(
-                    Odds(
-                        event_id=str(uuid.uuid4()),
-                        home_team=home,
-                        away_team=away,
-                        league=league,
-                        market="double_chance",
-                        selection="12",
-                        odds=1 / (1/price_index[key_1x]["price"] + 1/price_index[key_away]["price"]),
-                        bookmaker=self.name,
-                        timestamp=datetime.utcnow().isoformat() + "Z",
-                    )
-                )
-
-            # ================================
-            # 3) OVER/UNDER (Totals)
-            # ================================
+            # ===============================
+            # 5) OVER/UNDER (total)
+            # ===============================
             for p in periods:
-                if p["eventId"] != event_id:
-                    continue
-                if p["type"] == "total":
-                    total_points = p["points"]
+                if p["eventId"] == event_id_raw and p["type"] == "total":
+                    pts = p["points"]
 
-                    # over
-                    key_over = (event_id, 0, "total", f"over_{total_points}")
+                    # OVER
+                    key_over = (event_id_raw, 0, "total", "over")
                     if key_over in price_index:
                         out.append(
                             Odds(
-                                event_id=str(uuid.uuid4()),
+                                event_id=event_uid,
                                 home_team=home,
                                 away_team=away,
                                 league=league,
                                 market="over_under",
-                                selection=f"over {total_points}",
+                                selection=f"over {pts}",
                                 odds=float(price_index[key_over]["price"]),
                                 bookmaker=self.name,
-                                timestamp=datetime.utcnow().isoformat() + "Z",
+                                timestamp=timestamp,
+                                start_time=start_time,
+                                sport="soccer",
                             )
                         )
 
-                    # under
-                    key_under = (event_id, 0, "total", f"under_{total_points}")
+                    # UNDER
+                    key_under = (event_id_raw, 0, "total", "under")
                     if key_under in price_index:
                         out.append(
                             Odds(
-                                event_id=str(uuid.uuid4()),
+                                event_id=event_uid,
                                 home_team=home,
                                 away_team=away,
                                 league=league,
                                 market="over_under",
-                                selection=f"under {total_points}",
+                                selection=f"under {pts}",
                                 odds=float(price_index[key_under]["price"]),
                                 bookmaker=self.name,
-                                timestamp=datetime.utcnow().isoformat() + "Z",
+                                timestamp=timestamp,
+                                start_time=start_time,
+                                sport="soccer",
                             )
                         )
 
-            # ================================
-            # 4) HANDICAP ASIÁTICO (Spread)
-            # ================================
+            # ===============================
+            # 6) HANDICAP ASIÁTICO (spread)
+            # ===============================
             for p in periods:
-                if p["eventId"] != event_id:
-                    continue
-                if p["type"] == "spread":
+                if p["eventId"] == event_id_raw and p["type"] == "spread":
                     handicap = p["points"]
 
                     for side in ["home", "away"]:
-                        key_sp = (event_id, 0, "spread", f"{side}_{handicap}")
-                        if key_sp in price_index:
+                        key_spread = (event_id_raw, 0, "spread", side)
+                        if key_spread in price_index:
                             out.append(
                                 Odds(
-                                    event_id=str(uuid.uuid4()),
+                                    event_id=event_uid,
                                     home_team=home,
                                     away_team=away,
                                     league=league,
-                                    market="asian_handicap",
+                                    market="ah",
                                     selection=f"{side} {handicap}",
-                                    odds=float(price_index[key_sp]["price"]),
+                                    odds=float(price_index[key_spread]["price"]),
                                     bookmaker=self.name,
-                                    timestamp=datetime.utcnow().isoformat() + "Z",
+                                    timestamp=timestamp,
+                                    start_time=start_time,
+                                    sport="soccer",
                                 )
                             )
 
         return out
-
