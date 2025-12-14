@@ -6,17 +6,17 @@ from typing import List
 from scrapers.base import BaseScraper
 from models.odds import Odds
 
+# Normalização padrão do sistema
 from utils.normalize import (
     clean_team_name,
     clean_league_name,
-    clean_market_name,
-    clean_selection_name
+    clean_selection_name,
 )
 
-# API OFICIAL PÚBLICA DA 1XBET (Guest)
+
 API_URL = (
     "https://1xbet.com/LineFeed/Get1x2?"
-    "sport=1&count=100&lng=en&cfview=0&isGuest=1"
+    "sport=1&count=200&lng=en&cfview=0&isGuest=1"
 )
 
 
@@ -24,101 +24,90 @@ class OneXBetScraper(BaseScraper):
     name = "1xbet"
 
     async def fetch_upcoming(self, days_ahead: int = 7) -> List[Odds]:
-        out: List[Odds] = []
+        results: List[Odds] = []
 
+        # =============================
+        # 1) Chamada da API real
+        # =============================
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(API_URL, timeout=20) as resp:
-                    data = await resp.json()
+                async with session.get(API_URL, timeout=15) as resp:
+                    raw = await resp.json()
         except Exception as e:
-            print(f"[1XBET ERROR] {e}")
-            return out
+            print("[1XBET] API error:", e)
+            return results
 
-        events = data.get("Value", [])
+        events = raw.get("Value", [])
         timestamp = datetime.utcnow().isoformat() + "Z"
 
+        # =============================
+        # 2) Processar eventos
+        # =============================
         for ev in events:
             try:
-                # ===============================
-                # Times e Liga
-                # ===============================
-                home = clean_team_name(ev.get("O1"))
-                away = clean_team_name(ev.get("O2"))
+                home = clean_team_name(ev["O1"])
+                away = clean_team_name(ev["O2"])
                 league = clean_league_name(ev.get("L", ""))
 
-                start_time = ev.get("S")  # timestamp UNIX
+                start_time = ev.get("S")  # timestamp UNIX da 1xbet (opcional)
 
-                if not home or not away:
-                    continue
-
-                # event_id único e estável
-                event_uid = str(
-                    uuid.uuid5(uuid.NAMESPACE_DNS, f"1xbet-{home}-{away}-{start_time}")
+                # ID determinístico (único por evento)
+                event_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_DNS,
+                        f"{home}-{away}-{start_time}-1xbet"
+                    )
                 )
 
-                # ===============================
-                # Odds 1X2
-                # ===============================
-                odds_1x2 = ev.get("E", [])
-                # Estrutura real:
-                # 0 → Home
-                # 1 → Draw
-                # 2 → Away
+                odds = ev.get("E", [])
 
-                if len(odds_1x2) >= 3:
-                    # Home
-                    out.append(
+                if len(odds) < 3:
+                    # algumas ligas não têm odds de empate, mas para surebet sempre focamos no mínimo:
+                    # home / away
+                    pass
+
+                # =============================
+                # MERCADO 1X2
+                # =============================
+                if len(odds) >= 1:
+                    results.append(
                         Odds(
-                            event_id=event_uid,
+                            event_id=event_id,
                             home_team=home,
                             away_team=away,
                             league=league,
                             sport="soccer",
                             market="1x2",
                             selection="home",
-                            odds=float(odds_1x2[0]["C"]),
+                            odds=float(odds[0]["C"]),
                             bookmaker=self.name,
                             timestamp=timestamp,
                             start_time=start_time,
                         )
                     )
 
-                    # Draw
-                    out.append(
+                if len(odds) >= 2:
+                    results.append(
                         Odds(
-                            event_id=event_uid,
-                            home_team=home,
-                            away_team=away,
-                            league=league,
-                            sport="soccer",
-                            market="1x2",
-                            selection="draw",
-                            odds=float(odds_1x2[1]["C"]),
-                            bookmaker=self.name,
-                            timestamp=timestamp,
-                            start_time=start_time,
-                        )
-                    )
-
-                    # Away
-                    out.append(
-                        Odds(
-                            event_id=event_uid,
+                            event_id=event_id,
                             home_team=home,
                             away_team=away,
                             league=league,
                             sport="soccer",
                             market="1x2",
                             selection="away",
-                            odds=float(odds_1x2[2]["C"]),
+                            odds=float(odds[1]["C"]),
                             bookmaker=self.name,
                             timestamp=timestamp,
                             start_time=start_time,
                         )
                     )
 
+                # Existem APIs alternativas da 1xBet que têm "draw", mas esta (Get1x2)
+                # retorna geralmente apenas home/away neste endpoint simplificado.
+
             except Exception as e:
-                print(f"[1XBET PARSE ERROR] {e}")
+                print("[1XBET PARSE ERROR]", e)
                 continue
 
-        return out
+        return results
