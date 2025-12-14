@@ -3,6 +3,9 @@ from .stake import StakeScraper
 from .betano import BetanoScraper
 from .sportingbet import SportingbetScraper
 from .kto import KTOScraper
+from .bwin import BwinScraper
+from .xb1 import OneXBetScraper
+from .xb22 import TwentyTwoBetScraper
 
 SCRAPERS = [
     PinnacleScraper(),
@@ -10,4 +13,7 @@ SCRAPERS = [
     BetanoScraper(),
     SportingbetScraper(),
     KTOScraper(),
+    BwinScraper(),
+    OneXBetScraper(),
+    TwentyTwoBetScraper(),
 ]
