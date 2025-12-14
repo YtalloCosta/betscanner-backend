@@ -9,12 +9,13 @@ from models.odds import Odds
 from utils.normalize import (
     clean_team_name,
     clean_league_name,
-    clean_selection_name
+    clean_selection_name,
 )
+
 
 API_URL = (
     "https://22bet.com/LineFeed/Get1x2?"
-    "sport=1&count=100&lng=en&isGuest=1"
+    "sport=1&count=200&lng=en&isGuest=1"
 )
 
 
@@ -22,48 +23,50 @@ class TwentyTwoBetScraper(BaseScraper):
     name = "22bet"
 
     async def fetch_upcoming(self, days_ahead: int = 7) -> List[Odds]:
-        out: List[Odds] = []
+        results: List[Odds] = []
 
+        # =============================
+        # 1) CHAMADA DA API REAL
+        # =============================
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(API_URL, timeout=20) as resp:
-                    data = await resp.json()
+                async with session.get(API_URL, timeout=15) as resp:
+                    raw = await resp.json()
         except Exception as e:
-            print(f"[22BET API ERROR] {e}")
-            return out
+            print("[22BET] API error:", e)
+            return results
 
-        events = data.get("Value", [])
+        events = raw.get("Value", [])
         timestamp = datetime.utcnow().isoformat() + "Z"
 
+        # =============================
+        # 2) PROCESSAMENTO DOS EVENTOS
+        # =============================
         for ev in events:
             try:
-                # ============================
-                # TIMES E LIGA
-                # ============================
-                home = clean_team_name(ev.get("O1"))
-                away = clean_team_name(ev.get("O2"))
+                home = clean_team_name(ev["O1"])
+                away = clean_team_name(ev["O2"])
                 league = clean_league_name(ev.get("L", ""))
 
-                start_time = ev.get("S")  # epoch timestamp
+                start_time = ev.get("S")  # timestamp UNIX opcional
 
-                if not home or not away:
-                    continue
-
-                # event_id único e estável
-                event_uid = str(
-                    uuid.uuid5(uuid.NAMESPACE_DNS, f"22bet-{home}-{away}-{start_time}")
+                # event_id determinístico — evita duplicação
+                event_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_DNS,
+                        f"{home}-{away}-{start_time}-22bet"
+                    )
                 )
 
-                # ============================
-                # 1X2 COMPLETO (Home / Draw / Away)
-                # ============================
                 odds = ev.get("E", [])
 
-                if len(odds) >= 3:
-                    # HOME
-                    out.append(
+                # =============================
+                # MERCADO 1X2 (linha principal)
+                # =============================
+                if len(odds) >= 1:
+                    results.append(
                         Odds(
-                            event_id=event_uid,
+                            event_id=event_id,
                             home_team=home,
                             away_team=away,
                             league=league,
@@ -73,46 +76,29 @@ class TwentyTwoBetScraper(BaseScraper):
                             odds=float(odds[0]["C"]),
                             bookmaker=self.name,
                             timestamp=timestamp,
-                            start_time=start_time
+                            start_time=start_time,
                         )
                     )
 
-                    # DRAW
-                    out.append(
+                if len(odds) >= 2:
+                    results.append(
                         Odds(
-                            event_id=event_uid,
-                            home_team=home,
-                            away_team=away,
-                            league=league,
-                            sport="soccer",
-                            market="1x2",
-                            selection="draw",
-                            odds=float(odds[1]["C"]),
-                            bookmaker=self.name,
-                            timestamp=timestamp,
-                            start_time=start_time
-                        )
-                    )
-
-                    # AWAY
-                    out.append(
-                        Odds(
-                            event_id=event_uid,
+                            event_id=event_id,
                             home_team=home,
                             away_team=away,
                             league=league,
                             sport="soccer",
                             market="1x2",
                             selection="away",
-                            odds=float(odds[2]["C"]),
+                            odds=float(odds[1]["C"]),
                             bookmaker=self.name,
                             timestamp=timestamp,
-                            start_time=start_time
+                            start_time=start_time,
                         )
                     )
 
             except Exception as e:
-                print(f"[22BET PARSE ERROR] {e}")
+                print("[22BET PARSE ERROR]", e)
                 continue
 
-        return out
+        return results
