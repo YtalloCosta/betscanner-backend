@@ -9,7 +9,7 @@ from utils.dedupe import dedupe_add
 
 # scrapers reais e templates
 from scrapers.betano import BetanoScraper
-from scrapers.sportingbet import SportingbetScraper
+from scrapers.sportingbet import SportingBetScraper
 from scrapers.kto import KTOScraper
 from scrapers.bet365_template import Bet365ScraperTemplate
 from scrapers.pinnacle_template import PinnacleScraperTemplate
