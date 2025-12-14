@@ -19,82 +19,85 @@ class StakeScraper(BaseScraper):
 
     API_URL = (
         "https://api.stake.com/sports/events?"
-        "sport=soccer&limit=100&marketType="
-        "match_odds,totals,double_chance,both_teams_to_score,asian_handicap"
+        "sport=soccer&limit=200&marketType="
+        "match_odds,double_chance,both_teams_to_score,"
+        "totals,asian_handicap"
     )
 
     async def fetch_upcoming(self, days_ahead: int = 7) -> List[Odds]:
-        out: List[Odds] = []
+        results: List[Odds] = []
 
+        # ========================
+        # 1) CHAMADA REAL À API
+        # ========================
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(self.API_URL, timeout=20) as resp:
                     data = await resp.json()
         except Exception as e:
-            print(f"[Stake API ERROR] {e}")
-            return out
+            print("[STAKE] API error:", e)
+            return results
 
         events = data.get("events", [])
 
+        # ========================
+        # 2) PROCESSAR EVENTOS
+        # ========================
         for ev in events:
             try:
-                # ===============================
-                # Dados base do evento
-                # ===============================
+                # Times, liga
                 home = clean_team_name(ev["homeTeam"]["name"])
                 away = clean_team_name(ev["awayTeam"]["name"])
                 league = clean_league_name(ev["competition"]["name"])
+
                 start_time = ev.get("startTime")
-
-                # event_id consistente
-                event_uid = str(
-                    uuid.uuid5(uuid.NAMESPACE_DNS, f"stake-{home}-{away}-{start_time}")
-                )
-
                 timestamp = datetime.utcnow().isoformat() + "Z"
+
+                # event_id determinístico
+                event_id = str(uuid.uuid5(
+                    uuid.NAMESPACE_DNS,
+                    f"{home}-{away}-{start_time}-{self.name}"
+                ))
 
                 markets = ev.get("markets", [])
 
-                # ===============================
-                # 1) MERCADO 1X2
-                # ===============================
+                # ========================
+                # 1x2
+                # ========================
                 m_1x2 = next((m for m in markets if m["key"] == "match_odds"), None)
                 if m_1x2:
                     for sel in m_1x2.get("outcomes", []):
-                        selection = clean_selection_name(sel["name"])
-                        odds = float(sel["price"])
-
-                        out.append(
+                        results.append(
                             Odds(
-                                event_id=event_uid,
+                                event_id=event_id,
                                 home_team=home,
                                 away_team=away,
                                 league=league,
                                 sport="soccer",
                                 market="1x2",
-                                selection=selection,
-                                odds=odds,
+                                selection=clean_selection_name(sel["name"]),
+                                odds=float(sel["price"]),
                                 bookmaker=self.name,
                                 timestamp=timestamp,
                                 start_time=start_time,
                             )
                         )
 
-                # ===============================
-                # 2) DUPLA CHANCE
-                # ===============================
+                # ========================
+                # Dupla Chance
+                # ========================
                 m_dc = next((m for m in markets if m["key"] == "double_chance"), None)
                 if m_dc:
                     for sel in m_dc.get("outcomes", []):
-                        out.append(
+                        results.append(
                             Odds(
-                                event_id=event_uid,
+                                event_id=event_id,
                                 home_team=home,
                                 away_team=away,
                                 league=league,
                                 sport="soccer",
                                 market="double_chance",
-                                selection=clean_selection_name(sel["name"]),
+                                selection=sel["name"],  # 1X / X2 / 12
                                 odds=float(sel["price"]),
                                 bookmaker=self.name,
                                 timestamp=timestamp,
@@ -102,48 +105,20 @@ class StakeScraper(BaseScraper):
                             )
                         )
 
-                # ===============================
-                # 3) OVER / UNDER (CORRETO)
-                # ===============================
+                # ========================
+                # Over / Under
+                # ========================
                 m_ou = next((m for m in markets if m["key"] == "totals"), None)
                 if m_ou:
                     for sel in m_ou.get("outcomes", []):
-                        designation = sel.get("designation")  # over / under
-                        points = sel.get("points")  # ex: 2.5
-                        odds = float(sel["price"])
-
-                        selection = f"{designation} {points}"
-
-                        out.append(
+                        results.append(
                             Odds(
-                                event_id=event_uid,
+                                event_id=event_id,
                                 home_team=home,
                                 away_team=away,
                                 league=league,
                                 sport="soccer",
                                 market="over_under",
-                                selection=selection,
-                                odds=odds,
-                                bookmaker=self.name,
-                                timestamp=timestamp,
-                                start_time=start_time,
-                            )
-                        )
-
-                # ===============================
-                # 4) AMBAS MARCAM
-                # ===============================
-                m_btts = next((m for m in markets if m["key"] == "both_teams_to_score"), None)
-                if m_btts:
-                    for sel in m_btts.get("outcomes", []):
-                        out.append(
-                            Odds(
-                                event_id=event_uid,
-                                home_team=home,
-                                away_team=away,
-                                league=league,
-                                sport="soccer",
-                                market="btts",
                                 selection=clean_selection_name(sel["name"]),
                                 odds=float(sel["price"]),
                                 bookmaker=self.name,
@@ -152,27 +127,44 @@ class StakeScraper(BaseScraper):
                             )
                         )
 
-                # ===============================
-                # 5) HANDICAP ASIÁTICO
-                # ===============================
-                m_ah = next((m for m in markets if m["key"] == "asian_handicap"), None)
-                if m_ah:
-                    for sel in m_ah.get("outcomes", []):
-                        points = sel.get("handicap")
-                        odds = float(sel["price"])
-
-                        selection = f"{points}"
-
-                        out.append(
+                # ========================
+                # Ambas Marcam (BTTS)
+                # ========================
+                m_btts = next((m for m in markets if m["key"] == "both_teams_to_score"), None)
+                if m_btts:
+                    for sel in m_btts.get("outcomes", []):
+                        results.append(
                             Odds(
-                                event_id=event_uid,
+                                event_id=event_id,
                                 home_team=home,
                                 away_team=away,
                                 league=league,
                                 sport="soccer",
-                                market="ah",
-                                selection=selection,
-                                odds=odds,
+                                market="btts",
+                                selection=clean_selection_name(sel["name"]),  # yes/no
+                                odds=float(sel["price"]),
+                                bookmaker=self.name,
+                                timestamp=timestamp,
+                                start_time=start_time,
+                            )
+                        )
+
+                # ========================
+                # Handicap Asiático
+                # ========================
+                m_ah = next((m for m in markets if m["key"] == "asian_handicap"), None)
+                if m_ah:
+                    for sel in m_ah.get("outcomes", []):
+                        results.append(
+                            Odds(
+                                event_id=event_id,
+                                home_team=home,
+                                away_team=away,
+                                league=league,
+                                sport="soccer",
+                                market="asian_handicap",
+                                selection=clean_selection_name(sel["name"]),
+                                odds=float(sel["price"]),
                                 bookmaker=self.name,
                                 timestamp=timestamp,
                                 start_time=start_time,
@@ -180,7 +172,7 @@ class StakeScraper(BaseScraper):
                         )
 
             except Exception as e:
-                print(f"[StakeScraper PARSE ERROR] {e}")
+                print("[STAKE PARSE ERROR]", e)
                 continue
 
-        return out
+        return results
