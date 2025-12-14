@@ -1,7 +1,7 @@
 from .pinnacle import PinnacleScraper
 from .stake import StakeScraper
 from .betano import BetanoScraper
-from .sportingbet import SportingBetScraper  # Corrigido aqui
+from .sportingbet import SportingBetScraper
 from .kto import KTOScraper
 from .bwin import BwinScraper
 from .xb1 import OneXBetScraper
