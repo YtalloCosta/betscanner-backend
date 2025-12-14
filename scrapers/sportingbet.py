@@ -1,19 +1,29 @@
+import aiohttp
 import uuid
+import json
 from datetime import datetime
 from typing import List
-from playwright.async_api import async_playwright
+
 from scrapers.base import BaseScraper
 from models.odds import Odds
+from playwright.async_api import async_playwright
 
 
 class SportingbetScraper(BaseScraper):
     name = "sportingbet"
 
     async def fetch_upcoming(self, days_ahead: int = 7) -> List[Odds]:
-        url = "https://sports.sportingbet.com/pt-br/sports/futebol-4"
-
         out: List[Odds] = []
 
+        # URL para capturar token
+        PAGE_URL = "https://sports.sportingbet.com/pt-br/sports/futebol-4"
+        
+        # Endpoint da API SBTech
+        API_URL = "https://sports.sportingbet.com/api/sportsbook/events"
+
+        # ------------------------------
+        # 1) CAPTURAR TOKEN COM PLAYWRIGHT
+        # ------------------------------
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(
                 headless=True,
@@ -21,52 +31,148 @@ class SportingbetScraper(BaseScraper):
             )
 
             page = await browser.new_page()
-            await page.goto(url, timeout=60000)
-            await page.wait_for_timeout(5000)
+            await page.goto(PAGE_URL, timeout=60000)
+            await page.wait_for_timeout(4000)
 
-            rows = await page.query_selector_all("ms-event, .eventRow, .match-row")
-
-            for r in rows:
-                try:
-                    home = await r.query_selector_eval(".ms-event-name .home, .team--home", "e => e.innerText").strip()
-                    away = await r.query_selector_eval(".ms-event-name .away, .team--away", "e => e.innerText").strip()
-
-                    odd_home = float(
-                        (await r.query_selector_eval(".odd--home, .price", "e => e.innerText"))
-                        .replace(",", ".")
-                    )
-                    odd_away = float(
-                        (await r.query_selector_eval(".odd--away, .price", "e => e.innerText"))
-                        .replace(",", ".")
-                    )
-
-                    out.append(Odds(
-                        event_id=str(uuid.uuid4()),
-                        home_team=home,
-                        away_team=away,
-                        league="Sportingbet",
-                        market="1x2",
-                        selection="home",
-                        odds=odd_home,
-                        bookmaker=self.name,
-                        timestamp=datetime.utcnow().isoformat() + "Z",
-                    ))
-
-                    out.append(Odds(
-                        event_id=str(uuid.uuid4()),
-                        home_team=home,
-                        away_team=away,
-                        league="Sportingbet",
-                        market="1x2",
-                        selection="away",
-                        odds=odd_away,
-                        bookmaker=self.name,
-                        timestamp=datetime.utcnow().isoformat() + "Z",
-                    ))
-
-                except Exception:
-                    continue
+            # token interno usado pela API
+            token = await page.evaluate("""
+                () => window.localStorage.getItem('auth.access_token')
+            """)
 
             await browser.close()
+
+        if not token:
+            print("[Sportingbet] Token não encontrado")
+            return out
+
+        # ------------------------------
+        # 2) CHAMAR API REAL
+        # ------------------------------
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "sportIds": [4],  # futebol
+            "marketLimit": 100,
+            "count": 50,
+            "offset": 0,
+            "includeMarkets": True
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(API_URL, json=payload, headers=headers, timeout=20) as resp:
+                    data = await resp.json()
+        except Exception as e:
+            print(f"[Sportingbet API error] {e}")
+            return out
+
+        events = data.get("events", [])
+
+        # ------------------------------
+        # 3) PROCESSAR EVENTOS E MERCADOS
+        # ------------------------------
+        for ev in events:
+            try:
+                league = ev.get("competition", {}).get("name", "Sportingbet")
+
+                home = ev["participants"][0]["name"]
+                away = ev["participants"][1]["name"]
+
+                markets = ev.get("markets", [])
+
+                for m in markets:
+                    key = m.get("key", "")
+                    selections = m.get("selections", [])
+
+                    # --------------------
+                    # MERCADO 1X2
+                    # --------------------
+                    if key == "match_result":
+                        for sel in selections:
+                            out.append(Odds(
+                                event_id=str(uuid.uuid4()),
+                                home_team=home,
+                                away_team=away,
+                                league=league,
+                                market="1x2",
+                                selection=sel["name"].lower(),
+                                odds=float(sel["price"]),
+                                bookmaker=self.name,
+                                timestamp=datetime.utcnow().isoformat() + "Z",
+                            ))
+
+                    # --------------------
+                    # DUPLA CHANCE
+                    # --------------------
+                    if key == "double_chance":
+                        for sel in selections:
+                            out.append(Odds(
+                                event_id=str(uuid.uuid4()),
+                                home_team=home,
+                                away_team=away,
+                                league=league,
+                                market="double_chance",
+                                selection=sel["name"],   # 1X / X2 / 12
+                                odds=float(sel["price"]),
+                                bookmaker=self.name,
+                                timestamp=datetime.utcnow().isoformat() + "Z",
+                            ))
+
+                    # --------------------
+                    # OVER/UNDER
+                    # --------------------
+                    if key == "totals":
+                        for sel in selections:
+                            out.append(Odds(
+                                event_id=str(uuid.uuid4()),
+                                home_team=home,
+                                away_team=away,
+                                league=league,
+                                market="over_under",
+                                selection=sel["name"],  # "over 2.5"
+                                odds=float(sel["price"]),
+                                bookmaker=self.name,
+                                timestamp=datetime.utcnow().isoformat() + "Z",
+                            ))
+
+                    # --------------------
+                    # AMBAS MARCAM (BTTS)
+                    # --------------------
+                    if key == "both_teams_to_score":
+                        for sel in selections:
+                            out.append(Odds(
+                                event_id=str(uuid.uuid4()),
+                                home_team=home,
+                                away_team=away,
+                                league=league,
+                                market="btts",
+                                selection=sel["name"],  # yes/no
+                                odds=float(sel["price"]),
+                                bookmaker=self.name,
+                                timestamp=datetime.utcnow().isoformat() + "Z",
+                            ))
+
+                    # --------------------
+                    # HANDICAP ASIÁTICO
+                    # --------------------
+                    if key == "asian_handicap":
+                        for sel in selections:
+                            out.append(Odds(
+                                event_id=str(uuid.uuid4()),
+                                home_team=home,
+                                away_team=away,
+                                league=league,
+                                market="asian_handicap",
+                                selection=sel["name"],  # exemplo: home -1.5
+                                odds=float(sel["price"]),
+                                bookmaker=self.name,
+                                timestamp=datetime.utcnow().isoformat() + "Z",
+                            ))
+
+            except Exception:
+                continue
 
         return out
