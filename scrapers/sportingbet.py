@@ -1,68 +1,84 @@
-import asyncio
-import json
+import uuid
+import aiohttp
 from datetime import datetime
 from typing import List
-from playwright.async_api import async_playwright
 
-from scrapers.base import BaseScraper
 from models.odds import Odds
+from scrapers.base import BaseScraper
+
+from utils.normalize import (
+    clean_team_name,
+    clean_market_name,
+    clean_selection_name,
+    clean_league_name
+)
 
 
 class SportingbetScraper(BaseScraper):
     name = "sportingbet"
 
+    API_URL = "https://sports.sportingbet.com/api/sportsbook/events"
+
     async def fetch_upcoming(self, days_ahead: int = 7) -> List[Odds]:
-        out: List[Odds] = []
+        results: List[Odds] = []
 
-        PAGE_URL = "https://sports.sportingbet.com/pt-br/sports/futebol-4"
-        API_URL = "https://sports.sportingbet.com/api/sportsbook/events"
+        params = {
+            "sports": "futebol",
+            "template": "simple",
+            "days_ahead": days_ahead
+        }
 
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox"]
-            )
-            page = await browser.new_page()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(self.API_URL, params=params) as resp:
+                if resp.status != 200:
+                    print(f"[sportingbet] HTTP {resp.status}")
+                    return []
 
-            await page.goto(PAGE_URL, timeout=60000)
-            await page.wait_for_timeout(4000)
+                try:
+                    data = await resp.json()
+                except Exception as e:
+                    print("[sportingbet] JSON error:", e)
+                    return []
 
-            # pega token guardado no localStorage
-            token = await page.evaluate("""
-                () => window.localStorage.getItem('auth.access_token')
-            """)
+        events = data.get("events", [])
+        for ev in events:
+            try:
+                home = clean_team_name(ev["home"])
+                away = clean_team_name(ev["away"])
+                league = clean_league_name(ev.get("league", ""))
 
-            if not token:
-                return out
+                start_time = ev.get("startTime")
+                timestamp = datetime.utcnow().isoformat()
 
-            headers = {"authorization": f"Bearer {token}"}
+                event_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{home}-{away}-{start_time}"))
 
-            params = {
-                "sports": "4",
-                "limit": 50,
-                "offset": 0
-            }
+                markets = ev.get("markets", [])
 
-            response = await page.request.get(API_URL, headers=headers, params=params)
+                for m in markets:
+                    market_name = clean_market_name(m.get("name", ""))
 
-            if response.ok:
-                data = await response.json()
+                    for sel in m.get("selections", []):
+                        selection = clean_selection_name(sel["name"])
+                        price = float(sel["odds"])
 
-                for event in data.get("events", []):
-                    try:
-                        out.append(
-                            Odds(
-                                bookmaker=self.name,
-                                event_id=str(event.get("id")),
-                                home=event["name"]["value"].split(" vs ")[0],
-                                away=event["name"]["value"].split(" vs ")[1],
-                                date=datetime.fromtimestamp(event["startTime"] / 1000),
-                                markets=[],
-                            )
+                        odd_obj = Odds(
+                            event_id=event_id,
+                            home_team=home,
+                            away_team=away,
+                            league=league,
+                            sport="soccer",
+                            market=market_name,
+                            selection=selection,
+                            odds=price,
+                            bookmaker="sportingbet",
+                            timestamp=timestamp,
+                            start_time=start_time,
                         )
-                    except:
-                        continue
 
-            await browser.close()
+                        results.append(odd_obj)
 
-        return out
+            except Exception as e:
+                print("[sportingbet] parse error:", e)
+                continue
+
+        return results
