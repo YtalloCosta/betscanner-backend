@@ -3,9 +3,18 @@ uvicorn==0.20.0
 pydantic==2.8.0
 python-dotenv==1.0.0
 
-# Playwright (versão compatível com sua imagem Docker)
-playwright==1.41.0
-aiohttp==3.8.4
-
-# Dependências usuais
+# Scraping e APIs
+aiohttp==3.9.1
 requests==2.31.0
+
+# Playwright — versão EXATA compatível com sua imagem base
+playwright==1.41.0
+
+# Websockets usado pelo seu main.py
+websockets==12.0
+
+# Para evitar erros com import de normalize e utils
+python-slugify==8.0.1
+
+# Para async performance mais estável
+anyio==4.2.0
