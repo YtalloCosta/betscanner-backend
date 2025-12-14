@@ -15,15 +15,10 @@ class SportingBetScraper(BaseScraper):
     async def fetch_upcoming(self, days_ahead: int = 7) -> List[Odds]:
         out: List[Odds] = []
 
-        # URL para capturar token
         PAGE_URL = "https://sports.sportingbet.com/pt-br/sports/futebol-4"
-        
-        # Endpoint da API SBTech
         API_URL = "https://sports.sportingbet.com/api/sportsbook/events"
 
-        # ------------------------------
-        # 1) CAPTURAR TOKEN COM PLAYWRIGHT
-        # ------------------------------
+        # 1) Capturar token via Playwright
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(
                 headless=True,
@@ -34,7 +29,6 @@ class SportingBetScraper(BaseScraper):
             await page.goto(PAGE_URL, timeout=60000)
             await page.wait_for_timeout(4000)
 
-            # token interno usado pela API
             token = await page.evaluate("""
                 () => window.localStorage.getItem('auth.access_token')
             """)
@@ -45,16 +39,14 @@ class SportingBetScraper(BaseScraper):
             print("[Sportingbet] Token não encontrado")
             return out
 
-        # ------------------------------
-        # 2) CHAMAR API REAL
-        # ------------------------------
+        # 2) Chamada da API real
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"
         }
 
         payload = {
-            "sportIds": [4],  # futebol
+            "sportIds": [4],
             "marketLimit": 100,
             "count": 50,
             "offset": 0,
@@ -71,9 +63,7 @@ class SportingBetScraper(BaseScraper):
 
         events = data.get("events", [])
 
-        # ------------------------------
-        # 3) PROCESSAR EVENTOS E MERCADOS
-        # ------------------------------
+        # 3) Processar mercados
         for ev in events:
             try:
                 league = ev.get("competition", {}).get("name", "Sportingbet")
@@ -87,9 +77,7 @@ class SportingBetScraper(BaseScraper):
                     key = m.get("key", "")
                     selections = m.get("selections", [])
 
-                    # --------------------
-                    # MERCADO 1X2
-                    # --------------------
+                    # Match Odds
                     if key == "match_result":
                         for sel in selections:
                             out.append(Odds(
@@ -104,9 +92,7 @@ class SportingBetScraper(BaseScraper):
                                 timestamp=datetime.utcnow().isoformat() + "Z",
                             ))
 
-                    # --------------------
-                    # DUPLA CHANCE
-                    # --------------------
+                    # Dupla Chance
                     if key == "double_chance":
                         for sel in selections:
                             out.append(Odds(
@@ -115,15 +101,13 @@ class SportingBetScraper(BaseScraper):
                                 away_team=away,
                                 league=league,
                                 market="double_chance",
-                                selection=sel["name"],   # 1X / X2 / 12
+                                selection=sel["name"],
                                 odds=float(sel["price"]),
                                 bookmaker=self.name,
                                 timestamp=datetime.utcnow().isoformat() + "Z",
                             ))
 
-                    # --------------------
-                    # OVER/UNDER
-                    # --------------------
+                    # Over/Under
                     if key == "totals":
                         for sel in selections:
                             out.append(Odds(
@@ -132,15 +116,13 @@ class SportingBetScraper(BaseScraper):
                                 away_team=away,
                                 league=league,
                                 market="over_under",
-                                selection=sel["name"],  # "over 2.5"
+                                selection=sel["name"],
                                 odds=float(sel["price"]),
                                 bookmaker=self.name,
                                 timestamp=datetime.utcnow().isoformat() + "Z",
                             ))
 
-                    # --------------------
-                    # AMBAS MARCAM (BTTS)
-                    # --------------------
+                    # BTTS
                     if key == "both_teams_to_score":
                         for sel in selections:
                             out.append(Odds(
@@ -149,15 +131,13 @@ class SportingBetScraper(BaseScraper):
                                 away_team=away,
                                 league=league,
                                 market="btts",
-                                selection=sel["name"],  # yes/no
+                                selection=sel["name"],
                                 odds=float(sel["price"]),
                                 bookmaker=self.name,
                                 timestamp=datetime.utcnow().isoformat() + "Z",
                             ))
 
-                    # --------------------
-                    # HANDICAP ASIÁTICO
-                    # --------------------
+                    # Handicap Asiático
                     if key == "asian_handicap":
                         for sel in selections:
                             out.append(Odds(
@@ -166,7 +146,7 @@ class SportingBetScraper(BaseScraper):
                                 away_team=away,
                                 league=league,
                                 market="asian_handicap",
-                                selection=sel["name"],  # exemplo: home -1.5
+                                selection=sel["name"],
                                 odds=float(sel["price"]),
                                 bookmaker=self.name,
                                 timestamp=datetime.utcnow().isoformat() + "Z",
